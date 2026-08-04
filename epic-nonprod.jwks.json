@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "n": "uupe63H-erTekXYLHyFHUnQIIcvuQ9c8G7nBfu0eZqyE0XfVrkZyWUQTJ97HMjIiie6Lr3tc9OL1pD6NJfDvDA8pmdROuVP64z2wF9aNmv-GyBxPrlZRbRf9gdfyvOUp180d-TjADiUf-Et-Af1v1pa8FrGHxi6sCdO-W-fbDBkcdrIY0AURpj-DZ7fCh6aUbmIS5gAjuCn-_1ddqbjewxnkV4x7y9jGoqJWhpJy6ZWYHcf-hea_pCkKS_A7fJ8rJZlwOIVTwIeoR2c0LjV9rLlgX3leRn5kVvfP9wbKWK_bMwQmd5UqN3V9jIkdwzc0Wr8OTW-izOQBHCGPjfCevQ",
+      "e": "AQAB",
+      "kid": "truetime-epic-nonprod",
+      "use": "sig",
+      "alg": "RS384"
+    }
+  ]
+}
