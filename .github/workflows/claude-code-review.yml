@@ -1,0 +1,151 @@
+# AI code review on every PR — the missing human step.
+#
+# Until now nothing read a diff before it merged: branch protection requires a PR but zero
+# approvals, so an agent could write, merge and ship its own code with only the test suite
+# and Forge's deterministic scanners in between. Those check whether the code RUNS and
+# whether it matches known-bad patterns; neither asks "is this change correct, and does it
+# do what the PR says". This does.
+#
+# Auth: CLAUDE_CODE_OAUTH_TOKEN, an org secret minted from the CEO's Claude subscription
+# (`claude setup-token`) — subscription-billed, NOT metered API.
+#
+# PHI POSTURE — load-bearing: the subscription lane has NO BAA. This job only ever receives
+# the repo checkout and the PR diff. It has no database, no PHI bucket, no production
+# project, and no cloud credentials of any kind. That is exactly why the no-real-PHI-in-
+# repos rule is absolute: a fixture containing a real patient would be the one way PHI
+# could reach this lane.
+name: Claude PR Review
+
+on:
+  pull_request:
+    # `labeled` is load-bearing: the review:override escape hatch is applied as a label, and
+    # without this trigger nothing re-runs the check afterwards — the override would be
+    # inert, which is how the gate deadlocked its own PR the first time it was armed.
+    types: [opened, synchronize, reopened, labeled]
+
+# Cancel the previous review when new commits land — reviewing a stale diff wastes
+# subscription quota and can post findings the author already fixed.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Skip docs-only and bot-noise PRs; a prose change does not need a code review.
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        # The review step REPORTS; the gate below DECIDES. Never let this step's exit code
+        # be the merge verdict: it fails for reasons that have nothing to do with the code
+        # (the workflow-validation guard, an unsupported event, quota). Those must all land
+        # on the gate's fail-closed path, not turn into an unexplained red X.
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # POLICY (CEO, 2026-08-05): the review runs on the BEST AVAILABLE MODEL, currently
+          # Fable 5. The reviewer is the last thing standing between generated code and
+          # staging, and it is reading work written by a peer model — economising here buys
+          # a cheaper opinion on exactly the judgement that matters most. Revisit this pin
+          # whenever a stronger model ships; it is meant to be moved UP, never down.
+          claude_args: "--model claude-fable-5"
+          # Diagnostics: the first run completed in 2s, posted nothing, and reported an
+          # empty MODE — with output suppressed there was no way to see why. A review that
+          # silently does nothing while reporting success is the exact failure class this
+          # workflow exists to catch, so it must not be able to hide.
+          show_full_output: true
+          # Unsupported on `labeled` — which is exactly the event the override hatch fires
+          # on, so leaving it true errored the step on every override run.
+          track_progress: ${{ github.event.action != 'labeled' }}
+          # EVERY PR in this fleet is authored by truetime-helper[bot] — the agent identity
+          # all automated work commits under. The action refuses non-human actors by default
+          # (a sane anti-loop guard), so without this it fails 100% of our PRs with
+          # "Workflow initiated by non-human actor". Named explicitly rather than "*": an
+          # unknown bot opening a PR should still be refused.
+          allowed_bots: "truetime-helper[bot],truetime-helper"
+          prompt: |
+            Review this pull request as a senior engineer at a HIPAA-regulated home-health
+            software company. You did NOT write this code — read it with fresh eyes and
+            assume nothing about the author's intent beyond what the diff and PR body say.
+
+            Focus, in priority order:
+            1. CORRECTNESS — will this do what the PR claims? Off-by-one, wrong branch,
+               swallowed exception, a guard that does not guard, a control that is declared
+               but never wired (this codebase has shipped that exact bug three times: an
+               archive that never wrote, a rate limit never enforced, a cron never created).
+            2. SECURITY — auth/ownership checks on data routes, untrusted input reaching a
+               prompt or a query, secrets in code, anything widening access.
+            3. PHI SAFETY — real patient data in fixtures or tests (must NEVER exist),
+               PHI in logs, error messages, or anything leaving the service.
+            4. SILENT FAILURE — can this fail and look identical to success? Say so.
+            5. TESTS — do they actually assert the behaviour, or only that nothing threw?
+
+            Ignore style and formatting. Do not restate what the diff does.
+
+            Post ONE review comment. Start with a verdict line, exactly one of:
+              REVIEW: PASS   — nothing blocking
+              REVIEW: ISSUES — one or more findings that should be fixed before merge
+            Then list only real findings, worst first, each with file:line and a concrete
+            fix. If you find nothing, say so in one sentence — do not invent findings to
+            look useful. If the diff is too large to review carefully, say THAT rather
+            than skimming.
+
+      # THE GATE. The review step above always succeeds — it posts a comment and exits. This
+      # step turns that comment into a merge decision by reading the machine-readable verdict.
+      #
+      # Fails CLOSED on purpose: no verdict found is treated as ISSUES, not as a pass. The
+      # whole point is that a reviewer which silently did nothing must never look like
+      # approval — this workflow spent two entire runs reporting success while refusing every
+      # PR, and only confessed once its own output was turned on.
+      - name: Enforce the review verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # ESCAPE HATCH — human-applied only. A PR that edits this workflow is skipped by
+          # the platform's own validation guard (the file must match the default branch), so
+          # it can never earn a verdict: without this, the reviewer itself would be
+          # permanently unmergeable once the check is required. The label must have been
+          # applied by a HUMAN — verified against the issue timeline — so the agent cannot
+          # wave its own work through by labelling its own PR.
+          OVERRIDER=$(gh api "repos/${{ github.repository }}/issues/${PR}/timeline"                         --jq '[.[] | select(.event == "labeled" and .label.name == "review:override")]
+                              | last | select(.actor.type != "Bot") | .actor.login // empty' 2>/dev/null || true)
+          if [ -n "$OVERRIDER" ]; then
+            echo "::warning::Review gate OVERRIDDEN by @${OVERRIDER} via the review:override label — merged on a human decision, not a review."
+            exit 0
+          fi
+
+          BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+                   --jq '[.[] | select(.user.login == "claude[bot]")] | last | .body // ""')
+
+          if [ -z "$BODY" ]; then
+            echo "::error::The reviewer posted no comment — BLOCKED. A review that did not run is not an approval. If this PR edits the reviewer workflow, the platform skips it by design: a human can apply the review:override label."
+            exit 1
+          fi
+
+          if printf '%s' "$BODY" | grep -q "REVIEW: PASS"; then
+            echo "✅ REVIEW: PASS — merge unblocked."
+            exit 0
+          fi
+
+          if printf '%s' "$BODY" | grep -q "REVIEW: ISSUES"; then
+            echo "::error::REVIEW: ISSUES — merge blocked. Fix the findings in the review comment and push; this re-runs automatically on every commit."
+            printf '%s\n' "$BODY" | head -60
+            exit 1
+          fi
+
+          echo "::error::No verdict line found in the review comment — treating as BLOCKED."
+          printf '%s\n' "$BODY" | head -40
+          exit 1
