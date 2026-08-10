@@ -44,7 +44,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Claude review
+      - name: Claude review (Fable 5 — preferred model)
+        id: fable
         uses: anthropics/claude-code-action@v1
         # The review step REPORTS; the gate below DECIDES. Never let this step's exit code
         # be the merge verdict: it fails for reasons that have nothing to do with the code
@@ -107,6 +108,103 @@ jobs:
       # whole point is that a reviewer which silently did nothing must never look like
       # approval — this workflow spent two entire runs reporting success while refusing every
       # PR, and only confessed once its own output was turned on.
+
+      # DID FABLE ACTUALLY PRODUCE A VERDICT?
+      #
+      # A review that found problems is a RESULT and must stand. A review that never ran —
+      # exhausted subscription budget, a 1-second crash, an infra blip — is an ABSENCE, and
+      # it blocks every merge because the gate below fails closed. On 2026-08-09 that
+      # absence stopped deploys estate-wide while the code was fine.
+      - name: Did the preferred model return a verdict?
+        id: verdict_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" \
+                   --jq '[.[] | select(.user.login == "claude[bot]")] | last | .body // ""')
+          if printf '%s' "$BODY" | grep -qE "REVIEW: (PASS|ISSUES)"; then
+            echo "has_verdict=true" >> "$GITHUB_OUTPUT"
+            echo "Fable returned a verdict — no fallback."
+          else
+            echo "has_verdict=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Fable produced no verdict — falling back to Opus 5."
+          fi
+
+      # FALLBACK — Opus 5, and ONLY when there is no verdict at all.
+      #
+      # POLICY (CEO, 2026-08-10): always ATTEMPT the best available model (Fable 5) first;
+      # drop to Opus 5 only when Fable could not answer. Reviewing is the last thing between
+      # generated code and staging, so the strongest reader gets first refusal every run.
+      # This is a fallback, never a replacement, and the order must not be flipped for cost.
+      #
+      # THE SAFETY PROPERTY: this must NEVER be a second opinion on a verdict Fable already
+      # gave. If Fable said ISSUES and Opus were asked afresh, the gate would read whichever
+      # model happened to be kinder — model-shopping until something passes, which inverts
+      # the control. So it fires on ABSENCE of a verdict, never on an unwelcome one.
+      - name: Claude review (Opus 5 — fallback when Fable could not answer)
+        id: opus
+        if: steps.verdict_check.outputs.has_verdict == 'false'
+        uses: anthropics/claude-code-action@v1
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # POLICY (CEO, 2026-08-05): the review runs on the BEST AVAILABLE MODEL, currently
+          # Fable 5. The reviewer is the last thing standing between generated code and
+          # staging, and it is reading work written by a peer model — economising here buys
+          # a cheaper opinion on exactly the judgement that matters most. Revisit this pin
+          # whenever a stronger model ships; it is meant to be moved UP, never down.
+          claude_args: "--model claude-opus-5"
+          # Diagnostics: the first run completed in 2s, posted nothing, and reported an
+          # empty MODE — with output suppressed there was no way to see why. A review that
+          # silently does nothing while reporting success is the exact failure class this
+          # workflow exists to catch, so it must not be able to hide.
+          show_full_output: true
+          # Unsupported on `labeled` — which is exactly the event the override hatch fires
+          # on, so leaving it true errored the step on every override run.
+          track_progress: ${{ github.event.action != 'labeled' }}
+          # EVERY PR in this fleet is authored by truetime-helper[bot] — the agent identity
+          # all automated work commits under. The action refuses non-human actors by default
+          # (a sane anti-loop guard), so without this it fails 100% of our PRs with
+          # "Workflow initiated by non-human actor". Named explicitly rather than "*": an
+          # unknown bot opening a PR should still be refused.
+          allowed_bots: "truetime-helper[bot],truetime-helper"
+          prompt: |
+            Review this pull request as a senior engineer at a HIPAA-regulated home-health
+            software company. You did NOT write this code — read it with fresh eyes and
+            assume nothing about the author's intent beyond what the diff and PR body say.
+
+            Focus, in priority order:
+            1. CORRECTNESS — will this do what the PR claims? Off-by-one, wrong branch,
+               swallowed exception, a guard that does not guard, a control that is declared
+               but never wired (this codebase has shipped that exact bug three times: an
+               archive that never wrote, a rate limit never enforced, a cron never created).
+            2. SECURITY — auth/ownership checks on data routes, untrusted input reaching a
+               prompt or a query, secrets in code, anything widening access.
+            3. PHI SAFETY — real patient data in fixtures or tests (must NEVER exist),
+               PHI in logs, error messages, or anything leaving the service.
+            4. SILENT FAILURE — can this fail and look identical to success? Say so.
+            5. TESTS — do they actually assert the behaviour, or only that nothing threw?
+
+            Ignore style and formatting. Do not restate what the diff does.
+
+            Post ONE review comment. Start with a verdict line, exactly one of:
+              REVIEW: PASS   — nothing blocking
+              REVIEW: ISSUES — one or more findings that should be fixed before merge
+            Then list only real findings, worst first, each with file:line and a concrete
+            fix. If you find nothing, say so in one sentence — do not invent findings to
+            look useful. If the diff is too large to review carefully, say THAT rather
+            than skimming.
+
+      # THE GATE. The review step above always succeeds — it posts a comment and exits. This
+      # step turns that comment into a merge decision by reading the machine-readable verdict.
+      #
+      # Fails CLOSED on purpose: no verdict found is treated as ISSUES, not as a pass. The
+      # whole point is that a reviewer which silently did nothing must never look like
+      # approval — this workflow spent two entire runs reporting success while refusing every
+      # PR, and only confessed once its own output was turned on.
+
       - name: Enforce the review verdict
         if: always()
         env:
