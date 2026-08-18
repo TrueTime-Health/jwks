@@ -21,7 +21,11 @@ on:
     # `labeled` is load-bearing: the review:override escape hatch is applied as a label, and
     # without this trigger nothing re-runs the check afterwards — the override would be
     # inert, which is how the gate deadlocked its own PR the first time it was armed.
-    types: [opened, synchronize, reopened, labeled]
+    # `ready_for_review` is load-bearing alongside the empty-timestamp guard below:
+    # a draft PR skips the review job, so the gate fails closed with no run-start
+    # timestamp. Without this trigger, marking the PR ready re-runs nothing and it
+    # stays red forever. It is not in the default set for `pull_request`.
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
 
 # Cancel the previous review when new commits land — reviewing a stale diff wastes
 # subscription quota and can post findings the author already fixed.
@@ -101,6 +105,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           N: ${{ steps.rounds.outputs.bounces }}
+          # TITLE and URL are attacker-controllable text and MUST arrive as environment
+          # values, never as ${{ }} interpolated into the run: body below. Interpolation
+          # is literal text substitution performed before the shell ever starts, so a
+          # title containing a quote or ''' escapes into the script and executes on a
+          # runner that is holding GH_TOKEN and FORGE_API_KEY.
+          TITLE: ${{ github.event.pull_request.title }}
+          URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
           # Posted by the ACTIONS bot, not claude[bot], and it deliberately carries no
@@ -125,8 +136,8 @@ jobs:
             'repo': '${{ github.repository }}',
             'number': int(os.environ['PR']),
             'bounces': int(os.environ['N']),
-            'title': '''${{ github.event.pull_request.title }}'''[:200],
-            'url': '${{ github.event.pull_request.html_url }}',
+            'title': os.environ['TITLE'][:200],
+            'url': os.environ['URL'],
           }))
           ")" || echo "::warning::escalation email call failed — the PR is still blocked"
 
@@ -262,6 +273,13 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # Same empty-timestamp hole as the gate: without a run start this would read a
+          # verdict from an earlier commit, conclude the primary model already answered, and
+          # skip the fallback. Fail closed — the gate below blocks either way.
+          if [ -z "${RUN_STARTED:-}" ]; then
+            echo "::error::No run-start timestamp — cannot tell whether the primary model answered for THIS code."
+            exit 1
+          fi
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
           if printf '%s' "$BODY" | grep -qE "REVIEW: (PASS|ISSUES)"; then
             echo "has_verdict=true" >> "$GITHUB_OUTPUT"
@@ -428,6 +446,24 @@ jobs:
               echo "::warning::Review gate OVERRIDDEN by ${FOVR} via the Forge console (IAP-verified) — merged on a human decision, not a review."
               exit 0
             fi
+          fi
+
+          # FAIL CLOSED ON A MISSING RUN TIMESTAMP.
+          #
+          # RUN_STARTED comes from the review job. It arrives EMPTY when that job is skipped
+          # (draft PR — this job is `if: always()`, so it still runs) or dies before "Mark run
+          # start". The filter below then reads `select(.created_at >= "")`, and every string
+          # is >= "", so it matches every claude[bot] comment ever posted on this PR: a PASS
+          # left on an earlier commit silently approves whatever was pushed after it. That is
+          # the stale-verdict fail-open, reopened through a different door.
+          #
+          # Placed AFTER the override doors deliberately. A PR that edits this workflow is
+          # skipped by the platform and can never earn a verdict, so the human label is its
+          # only exit; guarding before that point would make the reviewer permanently
+          # unmergeable by anyone.
+          if [ -z "${RUN_STARTED:-}" ]; then
+            echo "::error::No run-start timestamp — BLOCKED. The review job was skipped or died before recording one, so this check cannot tell a verdict for THIS code from one left on an earlier commit. If this PR is a draft, mark it ready for review; otherwise re-run the review job."
+            exit 1
           fi
 
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
