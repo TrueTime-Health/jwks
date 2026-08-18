@@ -1,0 +1,36 @@
+# Runs the two workflow guard tests on every PR and every push to main.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# This repo has no pytest config, no package manifest and no other test-running
+# workflow, so `test_workflow_injection.py` and `test_gate_stale_verdict.py` would sit
+# in the tree and never execute — present, correct, and completely inert. A guard
+# nobody runs is not a guard; it is a comment that looks like one.
+#
+# Caught in review on the PR that added those tests: had this job existed then, that PR
+# would have gone red immediately, because the workflow fix the tests check for had been
+# silently dropped from the commit.
+#
+# Both files are stdlib-only and self-executing, so this needs no dependency install.
+name: Guard tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: No attacker-controllable text interpolated into a run body
+        run: python test_workflow_injection.py
+      - name: Merge gate fails closed without a run-start timestamp
+        run: python test_gate_stale_verdict.py
