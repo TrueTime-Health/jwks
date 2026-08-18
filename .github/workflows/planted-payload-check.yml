@@ -1,0 +1,82 @@
+name: Planted Payload Check
+
+# Deliberately its OWN workflow file, not a job bolted onto claude-code-review.yml.
+# PRs that touch the reviewer workflow are skipped by review, always fail `gate`, and
+# need a human-only review:override label — which would make this control unmergeable
+# by an agent and therefore never adopted.
+#
+# Runs on push to main as well as on PRs: the 2026-08-01 dropper reached main in repos
+# whose branch protection did not exist yet, and a control that only watches PRs cannot
+# see that.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  planted-payload-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A `pull_request` workflow runs the PR BRANCH's copy of everything. Left alone,
+      # a PR that plants a payload could edit this script to `return 0` in the same
+      # commit and still report green — the control would certify its own bypass.
+      # So we run MAIN's copy of the checker against the PR's tree.
+      #
+      # THIS FILE IS STILL THE PR'S COPY, AND THAT HOLE IS NOT CLOSED HERE.
+      # Being a required status check does NOT close it. A required check matches on
+      # name and outcome, never on content: a PR that keeps the job name
+      # `planted-payload-check` and guts the steps — `run: true`, or pointing
+      # PAYLOAD_CHECK_ROOT at an empty directory so the checker honestly inspects
+      # nothing and exits 0 — reports green. Required-ness defends against the job
+      # never REPORTING; it does not defend against the job LYING.
+      #
+      # The actual fix binds identities this workflow cannot bind: .github/CODEOWNERS
+      # names an owner for this file, the script and its test, but CODEOWNERS is inert
+      # until `require_code_owner_reviews` is enabled on main. Until a human turns that
+      # on, treat this control as protecting against accident and drift, not against a
+      # determined author of the PR it is checking.
+      - name: Resolve the checker to run
+        id: pick
+        run: |
+          set -euo pipefail
+          if git cat-file -e origin/main:scripts/check_planted_payloads.py 2>/dev/null; then
+            git show origin/main:scripts/check_planted_payloads.py > /tmp/checker.py
+            echo "source=origin/main (trusted)" >> "$GITHUB_OUTPUT"
+          else
+            # Only reachable on the PR that first introduces the script.
+            cp scripts/check_planted_payloads.py /tmp/checker.py
+            echo "::warning::main has no copy of the checker yet — running the PR's own \
+            copy. Expected ONLY on the PR that introduces this control; if you see this \
+            on any other PR, the script has been removed from main."
+            echo "source=PR branch (bootstrap — main has no copy yet)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for planted payloads
+        run: |
+          echo "checker source: ${{ steps.pick.outputs.source }}"
+          python3 /tmp/checker.py
+
+      # Run the behaviour lock explicitly rather than relying on each repo's pytest
+      # config to discover it — testpaths differ across the fleet, and a test that is
+      # never collected is indistinguishable from one that passes.
+      # This exercises the PR's copy of the script, which is the copy under review.
+      #
+      # NOTE ON THE DEPENDENCY: the CHECKER is pure stdlib and the step above installs
+      # nothing — that is the part that must not depend on a resolution an attacker
+      # could influence. This step does install pytest, and the pin does not cover
+      # transitive dependencies. It runs strictly AFTER the trusted check has already
+      # passed, with `contents: read` and no secrets, so a hostile pytest dependency
+      # could fail the build but could not suppress a payload finding.
+      - name: Run the checker's own tests
+        run: |
+          python3 -m pip install --quiet 'pytest==8.3.4'
+          python3 -m pytest tests/test_check_planted_payloads.py -q
