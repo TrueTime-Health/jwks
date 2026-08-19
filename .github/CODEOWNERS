@@ -1,0 +1,24 @@
+# Code owners.
+#
+# These three files ARE the planted-payload control. Whoever can change them without
+# review can switch the control off in the same pull request it is meant to inspect —
+# the workflow can be kept named `planted-payload-check` while its steps are gutted to
+# `run: true`, or pointed at an empty directory so the checker honestly reports
+# "inspected 0" and exits 0. A required status check does not catch that: it matches on
+# name and outcome, never on content.
+#
+# IMPORTANT: this file is INERT until `require_code_owner_reviews` is enabled on the
+# main branch protection. As of 2026-08-17 it is false on every repo in the fleet, and
+# `required_approving_review_count` is 0. Adding the entry is the half that can be done
+# in-repo; turning it on is a human decision and has to be made deliberately, because it
+# means these paths can no longer be changed by an agent alone.
+/.github/workflows/planted-payload-check.yml  @sumitcareteams
+/scripts/check_planted_payloads.py            @sumitcareteams
+/tests/test_check_planted_payloads.py         @sumitcareteams
+
+# This file owns ITSELF, and that line is load-bearing. GitHub resolves code owners
+# from the CODEOWNERS on the PR's BASE branch, so without this entry no owner review
+# is required to edit this file - and the bypass is two PRs: the first deletes the
+# entries above (nothing matches those paths any more), the second guts the workflow.
+# A list of protected paths that is itself unprotected protects nothing.
+/.github/CODEOWNERS                           @sumitcareteams
