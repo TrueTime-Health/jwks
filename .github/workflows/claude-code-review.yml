@@ -156,11 +156,15 @@ jobs:
         env:
           FORGE_URL: ${{ secrets.FORGE_URL }}
           FORGE_API_KEY: ${{ secrets.FORGE_API_KEY }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           PRIMARY="claude-fable-5"; FALLBACK="claude-opus-5"; SRC="workflow defaults"
           if [ -n "${FORGE_URL:-}" ] && [ -n "${FORGE_API_KEY:-}" ]; then
-            RESP=$(curl -fsS --max-time 10 -H "X-Forge-API-Key: ${FORGE_API_KEY}"                      "${FORGE_URL}/api/v1/reviewer-models" 2>/dev/null || true)
+            RESP=$(curl -fsS --max-time 10 -G -H "X-Forge-API-Key: ${FORGE_API_KEY}" --data-urlencode "pr_author=${PR_AUTHOR:-}" --data-urlencode "pr_title=${PR_TITLE:-}" --data-urlencode "pr_repo=${PR_REPO:-}" --data-urlencode "pr_number=${PR_NUMBER:-}" "${FORGE_URL}/api/v1/reviewer-models" 2>/dev/null || true)
             if [ -n "$RESP" ]; then
               P=$(printf '%s' "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('primary',''))" 2>/dev/null || true)
               F=$(printf '%s' "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('fallback',''))" 2>/dev/null || true)
