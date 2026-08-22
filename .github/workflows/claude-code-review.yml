@@ -205,7 +205,7 @@ jobs:
           # (a sane anti-loop guard), so without this it fails 100% of our PRs with
           # "Workflow initiated by non-human actor". Named explicitly rather than "*": an
           # unknown bot opening a PR should still be refused.
-          allowed_bots: "truetime-helper[bot],truetime-helper"
+          allowed_bots: "truetime-helper[bot],truetime-helper,dependabot[bot],dependabot"
           prompt: |
             Review this pull request as a senior engineer at a HIPAA-regulated home-health
             software company. You did NOT write this code — read it with fresh eyes and
@@ -307,6 +307,35 @@ jobs:
       # kinder — model-shopping until something passes, which quietly inverts the control.
       # So it fires only on ABSENCE of a verdict, never on an unwelcome one.
 
+      # CREDENTIALS ARE THE ONE FAILURE THIS JOB MUST NOT ABSORB.
+      #
+      # On a Dependabot-triggered run GitHub withholds Actions secrets — they live in a
+      # separate Dependabot scope — so CLAUDE_CODE_OAUTH_TOKEN arrives EMPTY. The action
+      # then no-ops (empty MODE, zero output, ~2s) and `continue-on-error: true` records
+      # SUCCESS. Both review layers go green having read nothing, and only `gate` notices,
+      # because it is the only check that looks for an actual comment.
+      #
+      # That shape is worse than a plain outage: two green checkmarks next to a red gate
+      # reads like a flaky gate, and the honest check is the one people start overriding.
+      # It stranded ~35 Dependabot PRs across the estate (2026-08-21) with no signal saying
+      # why. The fallback exists to cover a primary that could not answer — but it cannot
+      # cover a MISSING KEY, because it is holding the same empty one.
+      #
+      # So say it here, loudly, in the job that would otherwise have swallowed it. This is
+      # deliberately NOT continue-on-error: a review that could not authenticate did not
+      # happen, and a review that did not happen is not an approval.
+      - name: Reviewer credentials must exist
+        if: steps.verdict_check.outputs.has_verdict == 'false'
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OAUTH:-}" ]; then
+            echo "::error::NO REVIEWER CREDENTIALS — CLAUDE_CODE_OAUTH_TOKEN is empty, so neither the primary model nor this fallback can review. On a Dependabot PR this is expected until the secret is added to the repository's DEPENDABOT secret scope: GitHub does not pass Actions secrets to Dependabot-triggered runs. Add it under Settings > Secrets and variables > Dependabot. Failing CLOSED — this is a missing key, not a finding, and your code has not been judged."
+            exit 1
+          fi
+          echo "Reviewer credentials present — proceeding to the fallback model."
+
       - name: Claude review (fallback model — primary could not answer)
         id: opus
         if: >-
@@ -330,7 +359,7 @@ jobs:
           # a fresh job the fetch succeeds AND the comment exists, so the fallback finally
           # behaves exactly like the primary.
           track_progress: ${{ github.event.action != 'labeled' }}
-          allowed_bots: "truetime-helper[bot],truetime-helper"
+          allowed_bots: "truetime-helper[bot],truetime-helper,dependabot[bot],dependabot"
           prompt: |
             Review this pull request as a senior engineer at a HIPAA-regulated home-health
             software company. You did NOT write this code — read it with fresh eyes and
