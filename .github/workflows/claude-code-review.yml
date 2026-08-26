@@ -30,7 +30,26 @@ on:
 # Cancel the previous review when new commits land — reviewing a stale diff wastes
 # subscription quota and can post findings the author already fixed.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  # LABEL EVENTS GET THEIR OWN LANE — load-bearing, and the reason this file changed.
+  #
+  # Dependabot fires ~4 `labeled` events (`dependencies`, plus `python`/`javascript`)
+  # within 1-2 SECONDS of opening a PR. Each spawns its own review run. With a single
+  # shared group and cancel-in-progress, exactly ONE survives and WHICH one is a race.
+  # When a `labeled` run won, claude-code-action ran in `mode: agent`, never created its
+  # tracking comment, and came up with `"mcp_servers": []` — so the model had no
+  # `update_claude_comment` tool. It reviewed the code, billed a full review (~$1.18 of
+  # subscription quota), and the verdict reached the run log and nowhere else. The gate
+  # then correctly failed closed with "the reviewer posted no comment".
+  #
+  # Measured on the 2026-08-22 sweep: 38 of 70 open PRs were blocked this way and only 2
+  # won the race. That is ~$45/week billed for reviews that could never post, which is
+  # the main reason the seven-day budget kept running dry — and an exhausted reviewer
+  # blocks every deploy in the fleet (2026-08-09).
+  #
+  # Splitting the group is what actually stops the cancellation: GitHub evaluates
+  # concurrency at the RUN level, BEFORE any job `if` is considered, so the job guards
+  # below cannot prevent a label run from killing an in-flight code review on their own.
+  group: claude-review-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}
   cancel-in-progress: true
 
 permissions:
@@ -49,7 +68,16 @@ jobs:
       fallback: ${{ steps.models.outputs.fallback }}
       escalate: ${{ steps.rounds.outputs.escalate }}
     # Skip docs-only and bot-noise PRs; a prose change does not need a code review.
-    if: github.event.pull_request.draft == false
+    #
+    # A `labeled` event only ever reaches the reviewer for the override hatch. On any
+    # other label (Dependabot's `dependencies`/`python`/`javascript`) the action is forced
+    # into `mode: agent` — track_progress is unsupported on `labeled`, see the step below —
+    # so it CANNOT post a verdict no matter what it finds. Running it there burns a full
+    # review to produce nothing. Skip it, and let the code-triggered review stand.
+    if: >-
+      github.event.pull_request.draft == false &&
+      (github.event.action != 'labeled' ||
+       github.event.label.name == 'review:override')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -285,7 +313,7 @@ jobs:
             exit 1
           fi
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
-          if printf '%s' "$BODY" | grep -qE "REVIEW: (PASS|ISSUES)"; then
+          if printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
             echo "has_verdict=true" >> "$GITHUB_OUTPUT"
             echo "Fable returned a verdict — no fallback."
           else
@@ -401,6 +429,20 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     needs: [review, fallback_review]
+    # `always()` and NOTHING ELSE — deliberately not guarded on the label name.
+    #
+    # The obvious companion to the review-job guard above is to skip this job too on a
+    # non-override label. Do not. `gate` is a REQUIRED status check on this repo, and a
+    # skipped job still publishes a check run whose conclusion is "skipped". Whether
+    # branch protection counts a skipped required check as satisfied was not verifiable
+    # against anything in this fleet — no PR anywhere currently has a required context in
+    # that state — and if it does count as satisfied, then anyone able to add a label
+    # could turn a red gate green. That is fail-open on the one control standing between
+    # generated code and staging, so the design must not depend on the answer.
+    #
+    # Instead this job always runs and always publishes a real conclusion, and the enforce
+    # step below re-asserts the verdict already recorded for THIS commit when a label
+    # event arrives with no fresh review. See the comment there.
     if: always()
     steps:
       - name: Record which model reviewed
@@ -425,7 +467,7 @@ jobs:
           #
           # So the stamp is driven by what is ON the PR, not by what we assume happened.
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
-          if ! printf '%s' "$BODY" | grep -qE "REVIEW: (PASS|ISSUES)"; then
+          if ! printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
             echo "::warning::No verdict from any model — nothing to attribute, so no stamp."
             exit 0
           fi
@@ -452,6 +494,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           FORGE_URL: ${{ secrets.FORGE_URL }}
           FORGE_API_KEY: ${{ secrets.FORGE_API_KEY }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # ESCAPE HATCH — human-applied only. A PR that edits this workflow is skipped by
@@ -494,6 +539,30 @@ jobs:
           # skipped by the platform and can never earn a verdict, so the human label is its
           # only exit; guarding before that point would make the reviewer permanently
           # unmergeable by anyone.
+          # RE-ASSERT ON A NON-OVERRIDE LABEL — the other half of the label-race fix.
+          #
+          # The review job is skipped for these events (see its `if`), so RUN_STARTED is
+          # empty and the guard below would block. But a label carries NO new code: the
+          # verdict already recorded for this commit is still the correct answer, and
+          # destroying it because someone added `dependencies` is exactly the bug this
+          # change exists to remove.
+          #
+          # Anchor to the HEAD COMMIT's own timestamp rather than to nothing. That keeps
+          # the stale-verdict guard intact — a comment posted before this commit existed
+          # cannot be a verdict on this code — while letting a verdict posted after it
+          # stand. If no verdict has been posted since the commit (for example the
+          # code-triggered review is still running), BODY comes back empty and the
+          # empty-BODY branch below still BLOCKS. Every uncertain path stays closed, and
+          # the code run's own gate overwrites this one when it finishes.
+          if [ -z "${RUN_STARTED:-}" ] && [ "${EVENT_ACTION:-}" = "labeled" ] \
+             && [ "${LABEL_NAME:-}" != "review:override" ]; then
+            RUN_STARTED=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}" \
+                            --jq '.commit.committer.date' 2>/dev/null || true)
+            if [ -n "${RUN_STARTED}" ]; then
+              echo "Label event '${LABEL_NAME}' carries no new code — re-asserting the verdict recorded for ${HEAD_SHA} since ${RUN_STARTED}."
+            fi
+          fi
+
           if [ -z "${RUN_STARTED:-}" ]; then
             echo "::error::No run-start timestamp — BLOCKED. The review job was skipped or died before recording one, so this check cannot tell a verdict for THIS code from one left on an earlier commit. If this PR is a draft, mark it ready for review; otherwise re-run the review job."
             exit 1
@@ -510,21 +579,34 @@ jobs:
           # review from the outside — a red X on every PR in the fleet. On 2026-08-09 that
           # cost hours of hunting non-existent deploy failures. Name it explicitly so the
           # operator knows whether to fix code or top up the subscription.
-          if printf '%s' "$BODY" | grep -qiE "encountered an error|execution failed"              && ! printf '%s' "$BODY" | grep -qE "REVIEW: (PASS|ISSUES)"; then
+          if printf '%s' "$BODY" | grep -qiE "encountered an error|execution failed"              && ! printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
             echo "::error::NO REVIEWER AVAILABLE — both Fable 5 and the Opus 5 fallback failed to answer. This is a CAPACITY problem, not a finding: your code has not been judged. Check the Claude subscription budget, then re-run this job. Merge stays blocked because an unreviewed PR is not an approved one."
             printf '%s\n' "$BODY" | head -20
             exit 1
           fi
 
-          if printf '%s' "$BODY" | grep -q "REVIEW: PASS"; then
-            echo "✅ REVIEW: PASS — merge unblocked."
-            exit 0
-          fi
-
-          if printf '%s' "$BODY" | grep -q "REVIEW: ISSUES"; then
+          # ISSUES is tested FIRST and both patterns are anchored to the start of a line.
+          # Ported from truetime---api#188 / PR #223 (merged 2026-08-20); this repo was
+          # last synced 2026-08-18 and so never received it.
+          #
+          # The model ends its comment with `REVIEW: PASS`/`REVIEW: ISSUES` on its own line
+          # (always column 0 — verified against real verdicts), but the string can also
+          # appear mid-body: the model echoing its own instruction block (the prompt above
+          # contains BOTH literals), narrating "changing REVIEW: PASS to REVIEW: ISSUES",
+          # or quoting PR text back. The old code here grepped an UNANCHORED `REVIEW: PASS`
+          # FIRST, so any comment containing both strings merged as PASS — fail-open, the
+          # one direction this gate must never take. Anchoring rejects the mid-sentence
+          # mentions, and ISSUES-first means a comment that really does carry both verdict
+          # lines blocks rather than merges.
+          if printf '%s' "$BODY" | grep -qE "^REVIEW: ISSUES"; then
             echo "::error::REVIEW: ISSUES — merge blocked. Fix the findings in the review comment and push; this re-runs automatically on every commit."
             printf '%s\n' "$BODY" | head -60
             exit 1
+          fi
+
+          if printf '%s' "$BODY" | grep -qE "^REVIEW: PASS"; then
+            echo "✅ REVIEW: PASS — merge unblocked."
+            exit 0
           fi
 
           echo "::error::No verdict line found in the review comment — treating as BLOCKED."
