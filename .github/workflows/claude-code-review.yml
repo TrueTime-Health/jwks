@@ -598,13 +598,13 @@ jobs:
           # one direction this gate must never take. Anchoring rejects the mid-sentence
           # mentions, and ISSUES-first means a comment that really does carry both verdict
           # lines blocks rather than merges.
-          if printf '%s' "$BODY" | grep -qE "^REVIEW: ISSUES"; then
+          if printf '%s' "$BODY" | grep -qE "^#{0,6}[[:space:]]*\**REVIEW: ISSUES"; then
             echo "::error::REVIEW: ISSUES — merge blocked. Fix the findings in the review comment and push; this re-runs automatically on every commit."
             printf '%s\n' "$BODY" | head -60
             exit 1
           fi
 
-          if printf '%s' "$BODY" | grep -qE "^REVIEW: PASS"; then
+          if printf '%s' "$BODY" | grep -qE "^#{0,6}[[:space:]]*\**REVIEW: PASS"; then
             echo "✅ REVIEW: PASS — merge unblocked."
             exit 0
           fi
