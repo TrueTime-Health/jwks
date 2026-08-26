@@ -313,7 +313,7 @@ jobs:
             exit 1
           fi
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
-          if printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
+          if printf '%s' "$BODY" | grep -qE "^#{0,6}[[:space:]]*\**REVIEW: (PASS|ISSUES)"; then
             echo "has_verdict=true" >> "$GITHUB_OUTPUT"
             echo "Fable returned a verdict — no fallback."
           else
@@ -467,7 +467,7 @@ jobs:
           #
           # So the stamp is driven by what is ON the PR, not by what we assume happened.
           BODY=$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate --jq '[.[] | select(.user.login == "claude[bot]") | select(.created_at >= "'"${RUN_STARTED}"'")] | last | .body // ""')
-          if ! printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
+          if ! printf '%s' "$BODY" | grep -qE "^#{0,6}[[:space:]]*\**REVIEW: (PASS|ISSUES)"; then
             echo "::warning::No verdict from any model — nothing to attribute, so no stamp."
             exit 0
           fi
@@ -579,7 +579,7 @@ jobs:
           # review from the outside — a red X on every PR in the fleet. On 2026-08-09 that
           # cost hours of hunting non-existent deploy failures. Name it explicitly so the
           # operator knows whether to fix code or top up the subscription.
-          if printf '%s' "$BODY" | grep -qiE "encountered an error|execution failed"              && ! printf '%s' "$BODY" | grep -qE "^REVIEW: (PASS|ISSUES)"; then
+          if printf '%s' "$BODY" | grep -qiE "encountered an error|execution failed"              && ! printf '%s' "$BODY" | grep -qE "^#{0,6}[[:space:]]*\**REVIEW: (PASS|ISSUES)"; then
             echo "::error::NO REVIEWER AVAILABLE — both Fable 5 and the Opus 5 fallback failed to answer. This is a CAPACITY problem, not a finding: your code has not been judged. Check the Claude subscription budget, then re-run this job. Merge stays blocked because an unreviewed PR is not an approved one."
             printf '%s\n' "$BODY" | head -20
             exit 1
