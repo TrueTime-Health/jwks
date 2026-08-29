@@ -91,6 +91,48 @@ def test_genuine_binary_font_with_ascii_magic_still_passes(tree: pathlib.Path) -
     assert run(tree).returncode == 0, "a genuine binary font must not be flagged"
 
 
+# A real PDF is legitimately ASCII-structured — the binary-density heuristic is wrong
+# for it. Validate by structure, but keep the payload-shape scan so a forged trailer
+# cannot smuggle a script through.
+_VALID_PDF = (
+    "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+    "xref\n0 3\ntrailer\n<< /Root 1 0 R /Size 3 >>\nstartxref\n0\n%%EOF\n"
+)
+
+
+def test_structurally_valid_text_pdf_passes(tree: pathlib.Path) -> None:
+    """The regression this fixes: an honest ASCII PDF (header + xref + %%EOF) must pass,
+    even though it is mostly text — it is not a polyglot."""
+    (tree / "docs").mkdir()
+    (tree / "docs" / "doc.pdf").write_text(_VALID_PDF)
+    assert run(tree).returncode == 0, "a structurally valid text PDF must not be flagged"
+
+
+def test_pdf_prefixed_script_without_trailer_is_caught(tree: pathlib.Path) -> None:
+    """A bare `%PDF` prefix on a script — no trailer, no object structure — is a polyglot."""
+    (tree / "docs").mkdir()
+    (tree / "docs" / "fake.pdf").write_text(
+        '%PDF-1.4\nconst cp=require("child_process");cp.spawn("node",["-e","x"]);\n')
+    r = run(tree)
+    assert r.returncode == 1, "a %PDF-prefixed script with no PDF structure must be caught"
+    assert "polyglot" in r.stdout
+
+
+def test_pdf_polyglot_with_forged_trailer_is_caught(tree: pathlib.Path) -> None:
+    """The marker-stuffed bypass (review pcr-style): valid-looking structure — %PDF-,
+    startxref, %%EOF — wrapped around executable payload shapes must STILL be caught,
+    because structure markers are forgeable printable ASCII."""
+    (tree / "docs").mkdir()
+    (tree / "docs" / "poly.pdf").write_text(
+        '%PDF-1.4\n1 0 obj\n<< >>\nendobj\n'
+        'const cp=require("child_process");cp.spawn("node",["-e","evil"]);\n'
+        'xref\ntrailer\n<< /Root 1 0 R >>\nstartxref\n0\n%%EOF\n')
+    r = run(tree)
+    assert r.returncode == 1, "a structurally-valid PDF carrying payload shapes must be caught"
+    assert "PDF polyglot" in r.stdout or "child process" in r.stdout
+
+
 def test_folder_open_trigger_is_caught(tree: pathlib.Path) -> None:
     vs = tree / ".vscode"
     vs.mkdir()
