@@ -109,6 +109,29 @@ def _is_mostly_binary(data: bytes) -> bool:
     return nontext / len(data) > 0.20
 
 
+def _looks_like_pdf(path: pathlib.Path) -> bool:
+    """A real PDF is legitimately ASCII-structured, so the binary-density heuristic
+    (meant for fonts/images) false-flags every genuine text-based PDF. Validate the
+    PDF by STRUCTURE instead: it must open with the `%PDF-` header, carry the `%%EOF`
+    trailer at the end, and contain object/xref markers. A JS/script polyglot that
+    merely prepends `%PDF` to pass a startswith() check has none of that trailer or
+    object structure, so this still catches the masquerade it is meant to catch."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            head = fh.read(8192)
+            fh.seek(max(0, size - 2048))
+            tail = fh.read(2048)
+    except OSError:
+        return False
+    if not head.startswith(b"%PDF-"):
+        return False
+    if b"%%EOF" not in tail:
+        return False
+    # Real PDFs declare objects and a cross-reference table.
+    return b"obj" in head or b"xref" in head or b"xref" in tail or b"trailer" in tail
+
+
 def decode_json_escapes(text: str) -> str:
     """Resolve \\uXXXX the way a JSONC parser would, so escaped keys cannot hide."""
     return _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
@@ -174,6 +197,25 @@ def check(root: pathlib.Path) -> tuple[list[str], int, int, str]:
             if matched is None:
                 reason = (f"claims {ext} but starts with {head[:4]!r} "
                           f"({size} bytes) - not a real {ext.lstrip('.')}")
+            elif ext == ".pdf":
+                # PDFs are legitimately ASCII-structured, so validate them by structure
+                # (header + %%EOF trailer + object/xref markers), not binary density.
+                if not _looks_like_pdf(path):
+                    reason = (f"starts with the .pdf magic {matched!r} but lacks real PDF "
+                              f"structure (no %%EOF trailer / object markers) - a polyglot, "
+                              f"not a document")
+                else:
+                    # Structure alone is forgeable printable ASCII — a script can append a
+                    # fake `startxref`/`%%EOF` trailer — and unlike the font/image branch a
+                    # valid-looking PDF faces no density hurdle. So still scan the body for
+                    # executable payload shapes; the findings loop below lists the specifics.
+                    try:
+                        body = path.read_text(encoding="utf8", errors="replace")
+                    except OSError:
+                        body = ""
+                    if any(re.search(pat, body) for pat, _ in PAYLOAD_SHAPES):
+                        reason = ("is a structurally-valid PDF but its body contains "
+                                  "executable payload shapes - a PDF polyglot")
             elif all(0x20 <= b < 0x7f for b in matched) and not _is_mostly_binary(blob):
                 reason = (f"starts with the {ext} magic {matched!r} but the body is "
                           f"text, not binary - a real {ext.lstrip('.')} is binary "
