@@ -79,7 +79,7 @@ jobs:
       (github.event.action != 'labeled' ||
        github.event.label.name == 'review:override')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -206,7 +206,7 @@ jobs:
       - name: Claude review (primary model)
         id: fable
         if: steps.rounds.outputs.escalate != 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         # The review step REPORTS; the gate below DECIDES. Never let this step's exit code
         # be the merge verdict: it fails for reasons that have nothing to do with the code
         # (the workflow-validation guard, an unsupported event, quota). Those must all land
@@ -292,7 +292,7 @@ jobs:
       # expression resolved to rather than that the file parsed.)
       used_fallback: ${{ steps.verdict_check.outputs.has_verdict }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -368,7 +368,7 @@ jobs:
         id: opus
         if: >-
           steps.verdict_check.outputs.has_verdict == 'false'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
