@@ -1,0 +1,32 @@
+# Dependabot VERSION updates (routine currency), separate from Dependabot
+# SECURITY alerts, which are enabled at the repo level and need no config.
+#
+# Scoped: monthly. Majors ARE included — forge's weekly scan flags major lag, and
+# we want the fix delivered as a reviewable PR rather than only reported. Majors
+# arrive in their OWN PR per ecosystem so a breaking change cannot sit in the same
+# batch as routine patches and hold the ecosystem's currency hostage.
+#
+# github-actions is the ONLY ecosystem here: this repo carries no pip, npm or
+# docker manifest, so any other entry would be a no-op that looks like coverage.
+#
+# This entry is what keeps SHA pinning from becoming staleness. Every `uses:` is
+# pinned to a full commit SHA (sha_pinning_required is enforced org-wide), with the
+# tag kept as a trailing comment — Dependabot reads that comment to know which
+# release a pin corresponds to and proposes the next one.
+#
+# DO NOT enable auto-merge. A version-update PR is a supply-chain vector: a
+# compromised release arrives looking like a routine bump. Human review is the control.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-majors:
+        patterns: ["*"]
+        update-types: ["major"]
