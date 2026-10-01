@@ -154,23 +154,17 @@ def test_the_pull_request_title_is_never_acknowledged():
 
 
 def test_the_escalation_step_still_sends_the_title_from_the_environment():
-    """Names the specific step, so 'no offences found' cannot mean 'the step moved away'.
-
-    The scanner reports success just as loudly when the file it was written for has been
-    renamed or the payload dropped. This asserts the safe shape is actually present.
-    """
+    """Since forge#307 the escalation runs in forge's shared start action, which receives
+    the title only as an environment value. The name is kept for the deploy gate's
+    test-name tracker; what remains checkable here is that the PR title never reaches
+    this repo's caller at all — so there is nothing to interpolate."""
     wf = WORKFLOWS / "claude-code-review.yml"
     assert wf.exists(), "claude-code-review.yml is gone — this test no longer checks anything"
     text = wf.read_text(encoding="utf-8", errors="ignore")
-    assert "os.environ['TITLE']" in text, (
-        "the escalation payload no longer reads the PR title from the environment — if the "
-        "title came back as ${{ }} interpolation, the injection is back"
-    )
-    assert re.search(r"^\s+TITLE:\s*\$\{\{\s*github\.event\.pull_request\.title\s*\}\}\s*$",
-                     text, re.M), (
-        "TITLE is not bound in an `env:` block — os.environ['TITLE'] would raise KeyError "
-        "and the escalation call would fail"
-    )
+    assert "pr-review/start" in text, "the caller no longer delegates to the shared start"
+    assert "pull_request.title" not in text, (
+        "the PR title is referenced in the caller again — it must only ever reach a run "
+        "body through an env: binding, and the shared action already does that")
 
 
 def test_the_scanner_catches_the_line_that_was_actually_vulnerable():
