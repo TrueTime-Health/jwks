@@ -1,0 +1,41 @@
+# PR review, step 1 of the review job: anchor the run, count rounds, pick the models.
+# See ../README.md for the whole shape and ../pr_review_gate.py for the decisions.
+name: PR review — start
+description: Records the run start, applies the 7-round stand-down, and resolves the reviewer models.
+inputs:
+  github_token:
+    required: true
+  forge_url:
+    required: false
+    default: ""
+  forge_api_key:
+    required: false
+    default: ""
+outputs:
+  run_started:
+    description: ISO timestamp taken BEFORE any review — the anchor that makes a verdict belong to THIS commit.
+    value: ${{ steps.s.outputs.run_started }}
+  escalate:
+    value: ${{ steps.s.outputs.escalate }}
+  primary:
+    value: ${{ steps.s.outputs.primary }}
+  fallback:
+    value: ${{ steps.s.outputs.fallback }}
+runs:
+  using: composite
+  steps:
+    - id: s
+      shell: bash
+      # Title, author and URL are attacker-controllable: they arrive as ENVIRONMENT values,
+      # never as ${{ }} interpolated into the script (interpolation is text substitution
+      # done before the shell starts).
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        FORGE_URL: ${{ inputs.forge_url }}
+        FORGE_API_KEY: ${{ inputs.forge_api_key }}
+        PR_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_URL: ${{ github.event.pull_request.html_url }}
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" start

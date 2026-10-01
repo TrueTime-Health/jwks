@@ -1,0 +1,24 @@
+# forge#307 seam 1 — a conflicting PR silently skips review.
+#
+# GitHub cannot build a merge commit for a branch that conflicts with its base, so every
+# `pull_request` workflow — the review, the payload check, the synth deploy — never runs.
+# Seen on truetime--pcr#125: one check ran and nothing said why. This action is called from
+# a `pull_request_target` workflow, which fires regardless, and turns that silence into a red
+# check plus one PR comment (edited in place, never duplicated).
+#
+# It NEVER checks out or executes the PR's code: pull_request_target runs with the base
+# repo's token, and the only safe thing to do with it here is read PR metadata.
+name: PR review — mergeable
+description: Fails, with an explanatory comment, when the PR branch conflicts with its base.
+inputs:
+  github_token:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" mergeable

@@ -1,0 +1,66 @@
+# PR review: THE GATE. Stamps which model reviewed, then turns the verdict into a merge
+# decision. Fails CLOSED: no verdict, an unclear verdict, or UNVERIFIED without a human
+# acknowledgement all block. Decisions and their history: ../pr_review_gate.py.
+name: PR review — gate
+description: Attributes the review and enforces the verdict (PASS / ISSUES / UNVERIFIED) with the two human override doors.
+inputs:
+  github_token:
+    required: true
+  forge_url:
+    required: false
+    default: ""
+  forge_api_key:
+    required: false
+    default: ""
+  run_started:
+    required: false
+    default: ""
+  escalate:
+    required: false
+    default: ""
+  primary:
+    required: false
+    default: ""
+  fallback:
+    required: false
+    default: ""
+  primary_answered:
+    required: false
+    default: ""
+  fallback_posted:
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Record which model reviewed
+      if: inputs.escalate != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        RUN_STARTED: ${{ inputs.run_started }}
+        PRIMARY: ${{ inputs.primary }}
+        FALLBACK: ${{ inputs.fallback }}
+        PRIMARY_ANSWERED: ${{ inputs.primary_answered }}
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" stamp
+
+    - name: Enforce the review verdict
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EVENT_ACTION: ${{ github.event.action }}
+        LABEL_NAME: ${{ github.event.label.name }}
+        RUN_STARTED: ${{ inputs.run_started }}
+        PRIMARY: ${{ inputs.primary }}
+        FALLBACK: ${{ inputs.fallback }}
+        PRIMARY_ANSWERED: ${{ inputs.primary_answered }}
+        FALLBACK_POSTED: ${{ inputs.fallback_posted }}
+        FORGE_URL: ${{ inputs.forge_url }}
+        FORGE_API_KEY: ${{ inputs.forge_api_key }}
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" enforce
