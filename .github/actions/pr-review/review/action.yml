@@ -1,0 +1,59 @@
+# PR review: build the prompt and run ONE model over the PR.
+#
+# Used by both the primary (review job) and the fallback (fallback_review job). The same
+# action with the same prompt is what guarantees the fallback holds the primary's standard:
+# the hand-duplicated prompt blocks in the old per-repo workflows were identical only by luck.
+#
+# The CALLER marks this step `continue-on-error: true`. The review REPORTS; the gate DECIDES.
+# claude-code-action fails for reasons unrelated to the code (the workflow-validation guard,
+# an unsupported event, quota) and those must land on the gate's fail-closed path, not turn
+# into an unexplained red X. (continue-on-error is not available on steps INSIDE a composite,
+# which is why it sits with the caller.)
+name: PR review — run a model
+description: Assembles the shared prompt plus the repo's base-branch additions and runs claude-code-action.
+inputs:
+  github_token:
+    required: true
+  oauth_token:
+    required: true
+  model:
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: prep
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_REPO: ${{ github.repository }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        MODEL: ${{ inputs.model }}
+        PROMPT_FILE: ${{ github.action_path }}/../prompt.md
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" prepare
+
+    # Optional, from the repo's base-branch .github/pr-review.json — a repo whose reviewer
+    # should run its suite (truetime---voice) declares it there, not in its workflow.
+    - if: steps.prep.outputs.python_version != ''
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      with:
+        python-version: ${{ steps.prep.outputs.python_version }}
+    - if: steps.prep.outputs.install != ''
+      shell: bash
+      env:
+        INSTALL: ${{ steps.prep.outputs.install }}
+      run: bash -c "$INSTALL"
+
+    - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
+      with:
+        claude_code_oauth_token: ${{ inputs.oauth_token }}
+        claude_args: ${{ steps.prep.outputs.claude_args }}
+        # A review that silently does nothing while reporting success is the failure class
+        # this exists to catch; its output must not be able to hide.
+        show_full_output: true
+        # Unsupported on `labeled` — the event the override hatch fires on.
+        track_progress: ${{ github.event.action != 'labeled' }}
+        # Every PR in this fleet is authored by truetime-helper[bot]; the action refuses
+        # non-human actors by default. Named explicitly rather than "*": an unknown bot
+        # opening a PR should still be refused.
+        allowed_bots: "truetime-helper[bot],truetime-helper,dependabot[bot],dependabot"
+        prompt: ${{ steps.prep.outputs.prompt }}

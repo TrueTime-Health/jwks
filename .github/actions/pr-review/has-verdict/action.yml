@@ -1,0 +1,47 @@
+# PR review: did a model post a verdict for THIS run?
+#
+# In the fallback job, asked twice: before (did the primary answer? — decides whether the
+# fallback runs at all) and after (did the fallback answer? — lets the gate tell "both models
+# are down" from "the platform skipped this PR by design").
+#
+# The fallback fires only on the ABSENCE of a verdict, never on an unwelcome one. Asking a
+# second model after an ISSUES would let the gate read whichever model was kinder.
+name: PR review — has verdict
+description: Reports whether claude[bot] posted a verdict since the run started.
+inputs:
+  github_token:
+    required: true
+  run_started:
+    required: true
+  on_missing:
+    description: '"fail" (the primary check — no anchor means we cannot tell) or "unknown" (the report after the fallback).'
+    required: false
+    default: fail
+  oauth_token:
+    description: >-
+      Pass it in the primary check. When the primary produced no verdict AND the key is
+      empty, this step FAILS instead of letting the fallback no-op green with the same
+      empty key (see pr_review_gate.py). The caller must not mark this step
+      continue-on-error.
+    required: false
+    default: ""
+  check_credentials:
+    required: false
+    default: "false"
+outputs:
+  has_verdict:
+    value: ${{ steps.v.outputs.has_verdict }}
+runs:
+  using: composite
+  steps:
+    - id: v
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        PR_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        RUN_STARTED: ${{ inputs.run_started }}
+        ON_MISSING: ${{ inputs.on_missing }}
+        OAUTH: ${{ inputs.oauth_token }}
+        CHECK_CREDENTIALS: ${{ inputs.check_credentials }}
+      run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" has-verdict
