@@ -79,13 +79,13 @@ jobs:
       primary: ${{ steps.start.outputs.primary }}
       fallback: ${{ steps.start.outputs.fallback }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # VENDORED (forge#307): this repo cannot resolve forge's private actions, so it runs a
       # copy at .github/actions/pr-review/ — checked out from the PR's BASE commit, never
       # from the PR under review, so a PR cannot rewrite the reviewer judging it.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: .review-actions
@@ -117,13 +117,13 @@ jobs:
       primary_answered: ${{ steps.primary.outputs.has_verdict }}
       fallback_posted: ${{ steps.fallback.outputs.has_verdict }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # VENDORED (forge#307): this repo cannot resolve forge's private actions, so it runs a
       # copy at .github/actions/pr-review/ — checked out from the PR's BASE commit, never
       # from the PR under review, so a PR cannot rewrite the reviewer judging it.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: .review-actions
@@ -164,7 +164,7 @@ jobs:
       # VENDORED (forge#307): this repo cannot resolve forge's private actions, so it runs a
       # copy at .github/actions/pr-review/ — checked out from the PR's BASE commit, never
       # from the PR under review, so a PR cannot rewrite the reviewer judging it.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: .review-actions
