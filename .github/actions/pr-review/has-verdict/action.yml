@@ -28,6 +28,12 @@ inputs:
   check_credentials:
     required: false
     default: "false"
+  token_name:
+    description: >-
+      Which secret `oauth_token` came from, for the NO REVIEWER CREDENTIALS message. The
+      third lane (forge#341) passes CLAUDE_CODE_OAUTH_TOKEN_2.
+    required: false
+    default: "CLAUDE_CODE_OAUTH_TOKEN"
 outputs:
   has_verdict:
     value: ${{ steps.v.outputs.has_verdict }}
@@ -44,4 +50,5 @@ runs:
         ON_MISSING: ${{ inputs.on_missing }}
         OAUTH: ${{ inputs.oauth_token }}
         CHECK_CREDENTIALS: ${{ inputs.check_credentials }}
+        TOKEN_NAME: ${{ inputs.token_name }}
       run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" has-verdict

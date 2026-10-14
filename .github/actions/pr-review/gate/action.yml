@@ -30,6 +30,14 @@ inputs:
   fallback_posted:
     required: false
     default: ""
+  # The third lane (forge#341). Both empty on a caller that has no fallback2_review job, or
+  # when that job was skipped — the two-lane messages are then unchanged.
+  tertiary:
+    required: false
+    default: ""
+  fallback2_posted:
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -43,7 +51,10 @@ runs:
         RUN_STARTED: ${{ inputs.run_started }}
         PRIMARY: ${{ inputs.primary }}
         FALLBACK: ${{ inputs.fallback }}
+        TERTIARY: ${{ inputs.tertiary }}
         PRIMARY_ANSWERED: ${{ inputs.primary_answered }}
+        FALLBACK_POSTED: ${{ inputs.fallback_posted }}
+        FALLBACK2_POSTED: ${{ inputs.fallback2_posted }}
       run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" stamp
 
     - name: Enforce the review verdict
@@ -61,6 +72,8 @@ runs:
         FALLBACK: ${{ inputs.fallback }}
         PRIMARY_ANSWERED: ${{ inputs.primary_answered }}
         FALLBACK_POSTED: ${{ inputs.fallback_posted }}
+        TERTIARY: ${{ inputs.tertiary }}
+        FALLBACK2_POSTED: ${{ inputs.fallback2_posted }}
         FORGE_URL: ${{ inputs.forge_url }}
         FORGE_API_KEY: ${{ inputs.forge_api_key }}
       run: python3 "$GITHUB_ACTION_PATH/../pr_review_gate.py" enforce

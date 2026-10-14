@@ -64,6 +64,16 @@ ESCALATION_MARKER = "<!-- forge-pr-review:escalated -->"
 
 DEFAULT_PRIMARY = "claude-fable-5"
 DEFAULT_FALLBACK = "claude-opus-5"
+# THE THIRD LANE (forge#341). The primary and the fallback MODEL both run on the one org
+# secret CLAUDE_CODE_OAUTH_TOKEN, so a model outage is covered and a credential outage is
+# not: when that subscription's budget is spent or its token expires, both lanes fall
+# silent together and every PR in the fleet blocks. The third lane runs on a SECOND
+# subscription's token. Its model is fixed here, not chosen in the Forge console — the lane
+# exists for the moment the usual machinery is down, so nothing it depends on may be a
+# remote lookup.
+DEFAULT_TERTIARY = "claude-opus-5-5"
+PRIMARY_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
+SECOND_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN_2"
 ESCALATE_AFTER = 7
 
 # ── The verdict parser ───────────────────────────────────────────────────────────
@@ -285,8 +295,12 @@ class Ctx:
         self.forge_key = e.get("FORGE_API_KEY", "")
         self.primary = e.get("PRIMARY", "") or "the primary model"
         self.fallback = e.get("FALLBACK", "")
+        self.tertiary = e.get("TERTIARY", "")
         self.primary_answered = e.get("PRIMARY_ANSWERED", "")
         self.fallback_posted = e.get("FALLBACK_POSTED", "")
+        # "" on a caller without the third lane, or when that job was skipped — then the
+        # two-lane messages below stay exactly as they were.
+        self.fallback2_posted = e.get("FALLBACK2_POSTED", "")
         self.allowlist = tuple((e.get("OVERRIDE_ALLOWLIST", "") or "").split())
 
 
@@ -400,10 +414,18 @@ def _explain_silence(ctx, api) -> int:
               "in the Forge console; that is a genuinely unreviewed merge, not a rubber stamp.")
         return 1
     if ctx.primary_answered == "false" and ctx.fallback_posted == "false":
+        if ctx.fallback2_posted == "false":
+            print(f"::error::ALL REVIEWERS SILENT — {ctx.primary} returned no verdict, the "
+                  "fallback did not post one, and the third lane on the second subscription "
+                  f"({ctx.tertiary or DEFAULT_TERTIARY}) did not either. This is an "
+                  "INFRASTRUCTURE problem, not a finding: your code has NOT been judged. "
+                  f"Check BOTH Claude subscriptions' budgets and that {PRIMARY_TOKEN} and "
+                  f"{SECOND_TOKEN} are in this run's secret scope, then re-run.")
+            return 1
         print(f"::error::BOTH REVIEWERS SILENT — {ctx.primary} returned no verdict and the "
               "fallback did not post one either. This is an INFRASTRUCTURE problem, not a "
               "finding: your code has NOT been judged. Check the Claude subscription budget "
-              "and that CLAUDE_CODE_OAUTH_TOKEN is in this run's secret scope, then re-run.")
+              f"and that {PRIMARY_TOKEN} is in this run's secret scope, then re-run.")
         return 1
     print("::error::The reviewer posted no comment — BLOCKED. A review that did not run is "
           "not an approval.")
@@ -443,6 +465,12 @@ def stamp(ctx: Ctx, api) -> None:
         return
     if ctx.primary_answered == "true":
         note, model = "", ctx.primary
+    elif ctx.primary_answered == "false" and ctx.fallback2_posted == "true":
+        # Only the third lane posts after the fallback was seen NOT to — so a verdict that
+        # exists now, with fallback2_posted true, is the third lane's (forge#341).
+        note = (f" (second fallback, on the second subscription — {ctx.primary} and "
+                f"{ctx.fallback} returned no verdict)")
+        model = ctx.tertiary or DEFAULT_TERTIARY
     elif ctx.primary_answered == "false":
         note, model = f" (fallback — {ctx.primary} returned no verdict)", ctx.fallback
     else:
@@ -678,8 +706,10 @@ def main(argv=None) -> int:
                      ctx.forge_url, ctx.forge_key, comments=comments)
         p, f, src = resolve_models(ctx.forge_url, ctx.forge_key, e.get("PR_AUTHOR", ""),
                                    e.get("PR_TITLE", ""), ctx.repo, ctx.pr)
-        print(f"Reviewer models — primary={p} fallback={f} (source: {src})")
-        _out(run_started=at, bounces=n, escalate=str(esc).lower(), primary=p, fallback=f)
+        print(f"Reviewer models — primary={p} fallback={f} (source: {src}); "
+              f"third lane on {SECOND_TOKEN}: {DEFAULT_TERTIARY} (fixed)")
+        _out(run_started=at, bounces=n, escalate=str(esc).lower(), primary=p, fallback=f,
+             tertiary=DEFAULT_TERTIARY)
         return 0
     if cmd == "prepare":
         cfg = repo_config(api, ctx.repo, e.get("BASE_SHA", ""))
@@ -698,11 +728,16 @@ def main(argv=None) -> int:
         # say it here, in a step that is NOT continue-on-error. (It stranded ~35 Dependabot
         # PRs on 2026-08-21 behind two green review checks and one red gate.)
         if v == "false" and e.get("CHECK_CREDENTIALS") == "true" and not e.get("OAUTH"):
-            print("::error::NO REVIEWER CREDENTIALS — CLAUDE_CODE_OAUTH_TOKEN is empty, so "
-                  "neither model can review. On a Dependabot PR this is expected until the "
-                  "secret is added to the repository's DEPENDABOT secret scope (Settings > "
-                  "Secrets and variables > Dependabot). This is a missing key, not a "
-                  "finding; your code has not been judged.")
+            # TOKEN_NAME says WHICH secret: the third lane runs the same check against
+            # CLAUDE_CODE_OAUTH_TOKEN_2, and "the token is empty" must name the one to add.
+            token = e.get("TOKEN_NAME") or PRIMARY_TOKEN
+            lane = ("the third lane cannot review" if token == SECOND_TOKEN
+                    else "neither model can review")
+            print(f"::error::NO REVIEWER CREDENTIALS — {token} is empty, so {lane}. On a "
+                  "Dependabot PR this is expected until the secret is added to the "
+                  "repository's DEPENDABOT secret scope (Settings > Secrets and variables > "
+                  "Dependabot). This is a missing key, not a finding; your code has not been "
+                  "judged.")
             return 1
         return 0
     if cmd == "stamp":
