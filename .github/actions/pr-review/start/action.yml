@@ -21,6 +21,9 @@ outputs:
     value: ${{ steps.s.outputs.primary }}
   fallback:
     value: ${{ steps.s.outputs.fallback }}
+  tertiary:
+    description: The third lane's model (forge#341) — fixed in pr_review_gate.py, runs on CLAUDE_CODE_OAUTH_TOKEN_2.
+    value: ${{ steps.s.outputs.tertiary }}
 runs:
   using: composite
   steps:

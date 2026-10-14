@@ -25,7 +25,10 @@
 # forge checks the refs agree). A pin also means a forge PR that changes the reviewer is
 # never judged by the version it proposes.
 #
-# Auth: CLAUDE_CODE_OAUTH_TOKEN, an org secret minted from the CEO's Claude subscription.
+# Auth: CLAUDE_CODE_OAUTH_TOKEN, an org secret minted from the CEO's Claude subscription,
+# for the primary and fallback MODELS; CLAUDE_CODE_OAUTH_TOKEN_2, minted from a SECOND
+# subscription, for the third lane (forge#341) — two models cover a model outage, only a
+# second credential covers the subscription's budget running out.
 # PHI POSTURE — load-bearing: that lane has NO BAA. These jobs only ever receive the repo
 # checkout and the PR diff: no database, no PHI bucket, no production project, no cloud
 # credentials. That is why the no-real-PHI-in-repos rule is absolute.
@@ -78,6 +81,7 @@ jobs:
       escalate: ${{ steps.start.outputs.escalate }}
       primary: ${{ steps.start.outputs.primary }}
       fallback: ${{ steps.start.outputs.fallback }}
+      tertiary: ${{ steps.start.outputs.tertiary }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -153,12 +157,62 @@ jobs:
           run_started: ${{ needs.review.outputs.run_started }}
           on_missing: unknown
 
+  # THE THIRD LANE (forge#341): a different SUBSCRIPTION, not just a different model. The two
+  # jobs above share CLAUDE_CODE_OAUTH_TOKEN, so when that budget is spent they fall silent
+  # together. Fires only when the fallback was seen NOT to post — never as a third opinion.
+  # Its own job for the same reason fallback_review is (the action revokes its App token in
+  # its post-step). Skipped whenever fallback_review failed or was skipped: the implicit
+  # success() on `needs` is what makes the Dependabot empty-secret failure stay loud there.
+  fallback2_review:
+    runs-on: ubuntu-latest
+    needs: [review, fallback_review]
+    if: needs.fallback_review.outputs.fallback_posted == 'false'
+    outputs:
+      fallback2_posted: ${{ steps.fallback2.outputs.has_verdict }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Fails this job loudly when CLAUDE_CODE_OAUTH_TOKEN_2 is empty — the one failure a
+      # review step that no-ops green would otherwise hide (the Dependabot lesson, again).
+      # VENDORED (forge#307): this repo cannot resolve forge's private actions, so it runs a
+      # copy at .github/actions/pr-review/ — checked out from the PR's BASE commit, never
+      # from the PR under review, so a PR cannot rewrite the reviewer judging it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .review-actions
+          sparse-checkout: .github/actions/pr-review
+          persist-credentials: false
+      - id: creds
+        uses: ./.review-actions/.github/actions/pr-review/has-verdict
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_started: ${{ needs.review.outputs.run_started }}
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          check_credentials: "true"
+          token_name: CLAUDE_CODE_OAUTH_TOKEN_2
+      - name: Claude review (third lane — second subscription; primary and fallback could not answer)
+        continue-on-error: true
+        uses: ./.review-actions/.github/actions/pr-review/review
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
+          model: ${{ needs.review.outputs.tertiary }}
+      - id: fallback2
+        if: always()
+        uses: ./.review-actions/.github/actions/pr-review/has-verdict
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_started: ${{ needs.review.outputs.run_started }}
+          on_missing: unknown
+
   # Runs LAST and ALWAYS. `gate` is a required check: it must publish a real conclusion on
   # every event, never "skipped" — whether a skipped required check counts as satisfied is
   # not something this design may depend on.
   gate:
     runs-on: ubuntu-latest
-    needs: [review, fallback_review]
+    needs: [review, fallback_review, fallback2_review]
     if: always()
     steps:
       # VENDORED (forge#307): this repo cannot resolve forge's private actions, so it runs a
@@ -181,3 +235,5 @@ jobs:
           fallback: ${{ needs.review.outputs.fallback }}
           primary_answered: ${{ needs.fallback_review.outputs.primary_answered }}
           fallback_posted: ${{ needs.fallback_review.outputs.fallback_posted }}
+          tertiary: ${{ needs.review.outputs.tertiary }}
+          fallback2_posted: ${{ needs.fallback2_review.outputs.fallback2_posted }}

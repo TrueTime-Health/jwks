@@ -55,6 +55,8 @@ in four steps:
 2. Let one PR be reviewed, then read the gate's `REVIEWED-BY` stamp. It names the model that
    actually answered. If it reads `<old fallback> (fallback — <new model> returned no
    verdict)`, the new model failed; the review job log says why, and nothing was verified.
+   **No stamp at all** means the same: neither model answered. Use a normal PR for the
+   trial, not a Dependabot patch/minor bump, which goes to the cheap pair instead.
 3. While that PR is still open, load the **production** PR Review console; a staging render
    records nothing. The new model then appears in the Fallback dropdown, which lists only
    verified models. That is how you know step 3 worked.
@@ -62,6 +64,36 @@ in four steps:
 
 Dependabot patch/minor bumps use their own cheaper pair (`_DEPENDABOT_CHEAP` in
 `reviewer_models.py`), which the console pair does not change.
+
+## The third lane: a second subscription (forge#341)
+
+The primary and the fallback are two **models on one credential**, the org secret
+`CLAUDE_CODE_OAUTH_TOKEN`. That covers a model outage. It does not cover the subscription's
+budget running out or its token expiring — then both lanes fall silent together and every PR
+in the fleet blocks with `BOTH REVIEWERS SILENT` (2026-10-14).
+
+The caller's third job, `fallback2_review`, runs the same `review/` action with the same
+prompt on **`CLAUDE_CODE_OAUTH_TOKEN_2`**, a token minted from a *different* Claude
+subscription. It fires only when `has-verdict` saw the fallback NOT post — never as a third
+opinion — and its model is `DEFAULT_TERTIARY` in `pr_review_gate.py` (`claude-opus-5-5`),
+fixed in the workflow rather than chosen in the Forge console: the lane exists for the moment
+the usual machinery is down, so it depends on no remote lookup. Its `REVIEWED-BY` stamp reads
+`<model> (second fallback, on the second subscription — <primary> and <fallback> returned no
+verdict)`. When it is silent too, the gate says `ALL REVIEWERS SILENT` and names both secrets.
+
+Minting the second token (a human, on a machine signed in to the *other* subscription):
+
+```bash
+claude login
+claude setup-token
+```
+
+Add the printed token as an **org** Actions secret named `CLAUDE_CODE_OAUTH_TOKEN_2` (all
+repositories), and to each repository's **Dependabot** secret scope, exactly as the first
+token is. A repo without it fails `fallback2_review` loudly with `NO REVIEWER CREDENTIALS —
+CLAUDE_CODE_OAUTH_TOKEN_2 is empty` whenever the first two lanes are silent; that is the
+signal to add it, not a reason to mark the step continue-on-error. A token from the *same*
+subscription as the first adds nothing: it shares the budget that just ran out.
 
 ## Per-repo configuration
 
@@ -98,7 +130,13 @@ drifting again. Those bump PRs edit the reviewer workflow, so they still need a 
 
 ## Rollout status
 
-All 18 repos adopted on 2026-10-01 (forge#307), at forge `3897881`.
+All 18 repos adopted on 2026-10-01 (forge#307), at forge `3897881`. Moved to `56d590a`
+(claude-code-action v1.0.248 / Claude Code 2.1.296, forge#333) with checkout v7.0.1 in
+forge#318. The third lane (forge#341) ships in the next SHA bump: every caller takes the new
+`fallback2_review` job, so each bump PR edits the reviewer workflow and needs a human
+`review:override` (and the Forge console approval where `security-files` runs). Add the
+`CLAUDE_CODE_OAUTH_TOKEN_2` secret **before** bumping, or the new job fails on its first
+silent-lanes run.
 
 | Repo | Adopted in | How |
 |---|---|---|
