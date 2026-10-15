@@ -259,23 +259,58 @@ def human_label(api, repo, pr, label, allowlist=()):
     return login, last.get("created_at") or ""
 
 
-def forge_override(forge_url, forge_key, repo, pr, opener=urllib.request.urlopen):
-    """Door two: an override recorded in the Forge console, IAP-verified. Best-effort.
+def forge_override_record(forge_url, forge_key, repo, pr, opener=urllib.request.urlopen):
+    """Door two: the override entry recorded in the Forge console, IAP-verified, or {}.
 
-    Forge down degrades to "no override found" — it must never stop the verdict from
-    being evaluated. Fail-closed stays with the verdict.
+    Best-effort: Forge down degrades to "no override found" — it must never stop the
+    verdict from being evaluated. Fail-closed stays with the verdict.
+
+    The WHOLE entry, not just `by` (forge#345): the entry's `sha` is the commit the human
+    approved, and only the caller knows the head it must match.
     """
     if not (forge_url and forge_key):
-        return ""
+        return {}
     try:
         q = urllib.parse.urlencode({"repo": repo, "pr": str(pr)})
         req = urllib.request.Request(f"{forge_url.rstrip('/')}/api/v1/review-override?{q}")
         req.add_header("X-Forge-API-Key", forge_key)
         with opener(req, timeout=10) as r:
             d = (json.loads(r.read().decode() or "{}") or {}).get("override") or {}
-        return d.get("by", "") or ""
+        return d if isinstance(d, dict) else {}
     except Exception:  # noqa: BLE001 — best-effort by design, see docstring
-        return ""
+        return {}
+
+
+def forge_override(forge_url, forge_key, repo, pr, opener=urllib.request.urlopen):
+    """Who recorded the Forge override, ignoring WHICH COMMIT it was for. Kept for callers
+    of the old name only — the gate itself uses forge_override_record + override_covers_head,
+    because a `by` with no commit check approves code pushed after the approval (forge#345).
+    """
+    return forge_override_record(forge_url, forge_key, repo, pr, opener).get("by", "") or ""
+
+
+def override_covers_head(record, head_sha) -> str:
+    """"" when the override was granted for `head_sha`, else why it does not count.
+
+    WHY (forge#345). forge#211 made Forge refuse to RECORD an override without the PR head
+    SHA, but the gate went on reading only `by` — so Sumit approved commit A, anyone pushed
+    commit B, and B merged on an approval that never saw it. An approval is for one commit.
+
+    Every doubt is a reason, and every reason means the override is ignored: a different
+    sha, an empty one, a legacy pre-#211 entry with no `sha` field at all (it never said
+    which code it approved), and an event with no head to compare against.
+    """
+    rec = (record or {}).get("sha")
+    rec = rec.strip() if isinstance(rec, str) else ""
+    head = (head_sha or "").strip()
+    if not head:
+        return "no head SHA in the event, so the override cannot be tied to this commit"
+    if not rec:
+        return ("the override record carries no commit SHA (written before forge#211), so it "
+                f"does not say it approved head {head[:12]}; re-review needed")
+    if rec.lower() != head.lower():
+        return f"override was for {rec[:12]}; head is now {head[:12]}; re-review needed"
+    return ""
 
 
 # ── The gate ────────────────────────────────────────────────────────────────────
@@ -315,12 +350,21 @@ def enforce(ctx: Ctx, api, forge_opener=urllib.request.urlopen) -> int:
               "merged on a human decision, not a review.")
         return 0
     # DOOR TWO — the Forge console (carries an IAP-verified identity a stolen GitHub token
-    # cannot forge; the 2026-08-05 lesson).
-    fovr = forge_override(ctx.forge_url, ctx.forge_key, ctx.repo, ctx.pr, forge_opener)
+    # cannot forge; the 2026-08-05 lesson). It counts ONLY for the commit it was granted on
+    # (forge#345). A stale or unscoped one is ignored, not fatal: the gate falls through to
+    # the verdict for THIS head, so a fresh PASS still passes and anything else blocks.
+    frec = forge_override_record(ctx.forge_url, ctx.forge_key, ctx.repo, ctx.pr, forge_opener)
+    fovr = frec.get("by", "") or ""
     if fovr:
-        print(f"::warning::Review gate OVERRIDDEN by {fovr} via the Forge console "
-              "(IAP-verified) — merged on a human decision, not a review.")
-        return 0
+        why = override_covers_head(frec, ctx.head_sha)
+        if not why:
+            print(f"::warning::Review gate OVERRIDDEN by {fovr} via the Forge console "
+                  f"(IAP-verified) for {ctx.head_sha[:12]} — merged on a human decision, "
+                  "not a review.")
+            return 0
+        print(f"::error::Forge console override by {fovr} NOT honoured: {why}. An approval "
+              "covers the commit it was given on, not code pushed after it. Re-approve the "
+              "current head in the Forge console, or let the reviewer pass it.")
 
     # A LABEL EVENT CARRIES NO NEW CODE. The review job is skipped for it, so there is no
     # run timestamp — but the verdict already recorded for THIS COMMIT is still the right
