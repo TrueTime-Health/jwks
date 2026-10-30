@@ -25,7 +25,20 @@ this directory. Change review behaviour HERE, once. Do not edit a product repo's
 
 `UNVERIFIED` is forge#307 seam 2: a claim the reviewer could not check from the checkout
 (code outside the repo, a base image, an external identifier) no longer passes with a caveat.
-Labels count only while present and only when the most recent application was by a human.
+Labels count only while present and only when the most recent application was by a human
+on the repo's `override_allowlist` — which, when the repo sets none, is `sumitcareteams`
+(`DEFAULT_OVERRIDE_ALLOWLIST`, forge#355). An unset allowlist no longer means "anyone".
+
+`review:override` also counts **only for the code it was applied to** (forge#355), like the
+Forge console door (forge#345). The gate lists the PR's `pull_request` runs created since the
+label: the label's own run carries the head at labelling time, and every push since starts
+another. If any of them is for a commit other than the current head, the label is ignored —
+remove and re-apply it to approve what is there now. Because a writer can delete workflow
+runs, the gate also reads the branch's push log (the repository activity API, which writers
+cannot edit): no push or force-push may land at or after the label, and the last push before
+it must have left the branch at the current head. Only server-recorded times and SHAs are
+read, never a commit's own dates. A PR from a fork cannot be checked this way (its pushes are
+in the fork's log), so the label does not count there; use the Forge console door.
 
 ## Changing the reviewer models
 
@@ -111,6 +124,8 @@ the instructions of the reviewer judging it:
 ```
 
 Unknown keys fail the run loudly — a typo must not silently drop an instruction.
+`override_allowlist` is space-separated GitHub logins and is **added to** the default owner
+(`sumitcareteams` always stays on it); leaving it out means the default owner only.
 
 ## Adopting it in a repo
 

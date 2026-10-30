@@ -52,6 +52,11 @@ from datetime import datetime, timezone
 
 REVIEWER_LOGIN = "claude[bot]"
 OVERRIDE_LABEL = "review:override"
+# Who may apply review:override / review:unverified-ok when a repo names nobody (forge#355).
+# An EMPTY allowlist used to mean "any human with triage", which on a repo with no required
+# approvals let any writer self-override and merge alone. A repo widens this only in its
+# base-branch .github/pr-review.json — never by leaving it unset.
+DEFAULT_OVERRIDE_ALLOWLIST = ("sumitcareteams",)
 # Distinct from the override on purpose. An override says "merge despite the review"; this
 # says "I checked the thing the reviewer could not". It is honoured ONLY against an
 # UNVERIFIED verdict — it can never clear ISSUES — and only when applied AFTER that verdict,
@@ -236,10 +241,13 @@ def human_label(api, repo, pr, label, allowlist=()):
       * the MOST RECENT application was by a non-Bot actor — a bot re-applying after a
         human removed it is a bot's decision, and the agent must never be able to wave its
         own work through by labelling its own PR;
-      * if the repo sets an allowlist, the human is on it.
+      * the human is on the repo's allowlist, or on DEFAULT_OVERRIDE_ALLOWLIST when the
+        repo sets none (forge#355: unset used to mean "anyone").
 
     Returns (login, applied_at) so a caller can scope the decision in time.
     """
+    # A repo's list ADDS to the default owner; it never drops him (forge#356 review).
+    allowlist = tuple(allowlist) + DEFAULT_OVERRIDE_ALLOWLIST
     labels = api.get(f"repos/{repo}/issues/{pr}/labels", paginate=True)
     if label not in {(l or {}).get("name") for l in labels}:
         return "", ""
@@ -252,11 +260,101 @@ def human_label(api, repo, pr, label, allowlist=()):
     if not _is_human(last):
         print(f"::warning::The standing {label} label was last applied by a bot ({login}) — ignored.")
         return "", ""
-    if allowlist and login not in allowlist:
+    if login not in allowlist:
         print(f"::warning::{label} was applied by {login}, who is not on this repo's allowlist "
               f"({' '.join(allowlist)}) — ignored.")
         return "", ""
     return login, last.get("created_at") or ""
+
+
+PUSH_SKEW_SECONDS = 10
+
+
+def _shift(ts: str, seconds: int) -> str:
+    """GitHub's `2026-10-19T15:28:40Z` moved by `seconds`, same format; "" if unreadable."""
+    try:
+        t = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return ""
+    return datetime.fromtimestamp(t.timestamp() + seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def label_covers_head(api, repo, pr, applied_at, head_sha) -> str:
+    """"" when no code reached the PR after the override label was applied, else why not.
+
+    WHY (forge#355). The label door had no commit binding: a human labelled commit A, anyone
+    pushed B, and B merged on a decision nobody made about it. forge#345 closed this for the
+    Forge console, whose record names a SHA; a label names none, so the binding comes from
+    what GitHub records instead.
+
+    Every push to a PR starts `pull_request` runs, and so does applying the label itself (the
+    caller triggers on it). So the runs created at or after the label carry the head as it
+    was when the label went on, plus the head of every push since. The label covers the head
+    only if every one of those runs is for the current head. Run times and run SHAs are
+    server-assigned; the commit's own dates, which the author writes, are never read (the
+    forge#309 lesson). No run since the label, an unreadable list, or more runs than one
+    page are reasons, and every reason means the label is ignored.
+    """
+    head = (head_sha or "").strip()
+    if not head:
+        return "no head SHA in the event, so the label cannot be tied to this commit"
+    if not applied_at:
+        return "the label event carries no time, so it cannot be tied to a commit"
+    try:
+        pull = api.get(f"repos/{repo}/pulls/{pr}") or {}
+        ph = pull.get("head") or {}
+        if (ph.get("sha") or "") != head:
+            return f"the PR head is now {(ph.get('sha') or '?')[:12]}, not {head[:12]}"
+        q = urllib.parse.urlencode({"event": "pull_request", "branch": ph.get("ref") or "",
+                                    "created": f">={applied_at}", "per_page": "100"})
+        page = api.get(f"repos/{repo}/actions/runs?{q}") or {}
+    except Exception as e:  # noqa: BLE001 — unknown is a reason, and reasons block
+        return f"could not read the PR's runs: {e}"
+    runs = page.get("workflow_runs") or []
+    if (page.get("total_count") or 0) > len(runs):
+        return "more runs since the label than one page holds; re-apply the label"
+    head_repo = ((ph.get("repo") or {}).get("full_name") or "").lower()
+    mine = [r for r in runs
+            if any(str(p.get("number")) == str(pr) for p in (r.get("pull_requests") or []))
+            or ((r.get("head_repository") or {}).get("full_name") or "").lower() == head_repo]
+    if not mine:
+        return "GitHub recorded no run since the label was applied, so it cannot be tied to a commit"
+    # FULL SHAs: a 12-char prefix can be ground to collide (forge#356 review).
+    other = sorted({(r.get("head_sha") or "") for r in mine} - {head})
+    if other:
+        return (f"code reached the PR after the label (runs for "
+                f"{', '.join(s[:12] or '?' for s in other)}); the label "
+                f"approved that, not head {head[:12]}")
+    # A writer can DELETE workflow runs (forge#356 review), so the list above alone could be
+    # emptied of the label's own run. Cross-check the branch's push log (the repository
+    # activity API), which writers cannot edit: nothing may have been pushed to the PR branch
+    # at or after the label, and the last push before it must have left the branch at the
+    # current head. That also catches a force-push back to an older commit. A fork's pushes
+    # are not in this repo's log, so a fork PR cannot be tied and the label does not count.
+    if head_repo != repo.lower():
+        return "the PR comes from a fork, whose pushes this repo cannot see"
+    try:
+        q = urllib.parse.urlencode({"ref": f"refs/heads/{ph.get('ref') or ''}", "per_page": "100"})
+        log = api.get(f"repos/{repo}/activity?{q}") or []
+    except Exception as e:  # noqa: BLE001
+        return f"could not read the branch's push log: {e}"
+    # The label and the push log are stamped by different GitHub systems to the second, so a
+    # push just after the label could be recorded just before it. Treat anything within
+    # PUSH_SKEW_SECONDS before the label as after it; a false refusal only means re-labelling.
+    cutoff = _shift(applied_at, -PUSH_SKEW_SECONDS)
+    if not cutoff:
+        return f"the label time {applied_at!r} is unreadable"
+    since = [a for a in log if (a.get("timestamp") or "") >= cutoff]
+    if since:
+        return (f"the branch was pushed at {since[0].get('timestamp')}, after the label "
+                f"({applied_at}); the label approved earlier code")
+    before = sorted((a for a in log if a.get("timestamp")), key=lambda a: a["timestamp"])
+    if not before:
+        return "the branch has no recorded push, so the labelled code is unknown"
+    if (before[-1].get("after") or "") != head:
+        return (f"the branch stood at {(before[-1].get('after') or '?')[:12]} when labelled, "
+                f"not head {head[:12]}")
+    return ""
 
 
 def forge_override_record(forge_url, forge_key, repo, pr, opener=urllib.request.urlopen):
@@ -344,11 +442,17 @@ def enforce(ctx: Ctx, api, forge_opener=urllib.request.urlopen) -> int:
     # DOOR ONE — the human review:override label. Read BEFORE the run-timestamp guard: a
     # PR that edits the reviewer caller is skipped by the platform and can never earn a
     # verdict, so if the guard came first the human label could never open it.
-    who, _ = human_label(api, ctx.repo, ctx.pr, OVERRIDE_LABEL, ctx.allowlist)
+    # It counts ONLY for the code it was applied to (forge#355), like door two below.
+    who, at = human_label(api, ctx.repo, ctx.pr, OVERRIDE_LABEL, ctx.allowlist)
     if who:
-        print(f"::warning::Review gate OVERRIDDEN by @{who} via the {OVERRIDE_LABEL} label — "
-              "merged on a human decision, not a review.")
-        return 0
+        why = label_covers_head(api, ctx.repo, ctx.pr, at, ctx.head_sha)
+        if not why:
+            print(f"::warning::Review gate OVERRIDDEN by @{who} via the {OVERRIDE_LABEL} label "
+                  f"for {ctx.head_sha[:12]} — merged on a human decision, not a review.")
+            return 0
+        print(f"::error::{OVERRIDE_LABEL} by @{who} NOT honoured: {why}. An approval covers "
+              "the code it was given on. Remove and re-apply the label to approve the current "
+              "head, or let the reviewer pass it.")
     # DOOR TWO — the Forge console (carries an IAP-verified identity a stolen GitHub token
     # cannot forge; the 2026-08-05 lesson). It counts ONLY for the commit it was granted on
     # (forge#345). A stale or unscoped one is ignored, not fatal: the gate falls through to
