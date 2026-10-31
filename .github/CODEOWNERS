@@ -22,3 +22,36 @@
 # entries above (nothing matches those paths any more), the second guts the workflow.
 # A list of protected paths that is itself unprotected protects nothing.
 /.github/CODEOWNERS                           @sumitcareteams
+
+# The review gate (forge#355 follow-up): the reviewer is itself a security control, so a
+# PR that guts it sails past every later check. This repo cannot resolve forge's private
+# actions, so claude-code-review.yml runs the VENDORED copy below, checked out from the
+# base commit; editing it can switch the reviewer off as surely as editing the workflow.
+# Exact paths only; README.md is documentation and is left out. The two guard tests and
+# the workflow that runs them are the reviewer's own tests.
+/.github/workflows/claude-code-review.yml                  @sumitcareteams
+/.github/workflows/pr-mergeable.yml                        @sumitcareteams
+/.github/workflows/guard-tests.yml                         @sumitcareteams
+/test_workflow_injection.py                                @sumitcareteams
+/test_gate_stale_verdict.py                                @sumitcareteams
+/.github/actions/pr-review/pr_review_gate.py               @sumitcareteams
+/.github/actions/pr-review/prompt.md                       @sumitcareteams
+/.github/actions/pr-review/gate/action.yml                 @sumitcareteams
+/.github/actions/pr-review/has-verdict/action.yml          @sumitcareteams
+/.github/actions/pr-review/mergeable/action.yml            @sumitcareteams
+/.github/actions/pr-review/review/action.yml               @sumitcareteams
+/.github/actions/pr-review/start/action.yml                @sumitcareteams
+/.github/actions/pr-review/MANIFEST.sha256                 @sumitcareteams
+/.github/actions/pr-review/VENDORED_FROM                   @sumitcareteams
+
+# The reviewer's config, read from the base commit. `install` is run by bash in the
+# review job, which holds the Claude credential: arbitrary command execution.
+# `override_allowlist` decides who may override the gate; `allowed_tools` what the
+# reviewer may execute. The empty {} makes this entry name a real file, per
+# the fleet's exact-file convention (the security-files gate rejects any other form); with no keys it behaves exactly as no file.
+/.github/pr-review.json                                    @sumitcareteams
+
+# Like every entry here, enforced only while main's branch protection has BOTH
+# require_code_owner_reviews on and required_approving_review_count >= 1. The note at
+# the top records both off on 2026-08-17; a comment cannot show the current state, so
+# check it live (GitHub -> Settings -> Branches -> main).
