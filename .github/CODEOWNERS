@@ -43,3 +43,12 @@
 /.github/actions/pr-review/start/action.yml                @sumitcareteams
 /.github/actions/pr-review/MANIFEST.sha256                 @sumitcareteams
 /.github/actions/pr-review/VENDORED_FROM                   @sumitcareteams
+
+# The reviewer's config. Read from the base commit, it decides who may override the
+# gate (override_allowlist), what the review job installs and runs (install), and what
+# the reviewer may execute (allowed_tools). The empty {} exists so this entry names a
+# real file, per the blob check; it changes nothing (no keys = the defaults).
+/.github/pr-review.json                                    @sumitcareteams
+
+# Enforced only while require_code_owner_reviews is on for main (see the note at the
+# top of this file, which predates it being switched on fleet-wide on 2026-08-20).
