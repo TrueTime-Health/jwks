@@ -44,11 +44,14 @@
 /.github/actions/pr-review/MANIFEST.sha256                 @sumitcareteams
 /.github/actions/pr-review/VENDORED_FROM                   @sumitcareteams
 
-# The reviewer's config. Read from the base commit, it decides who may override the
-# gate (override_allowlist), what the review job installs and runs (install), and what
-# the reviewer may execute (allowed_tools). The empty {} exists so this entry names a
-# real file, per the blob check; it changes nothing (no keys = the defaults).
+# The reviewer's config, read from the base commit. `install` is run by bash in the
+# review job, which holds the Claude credential: arbitrary command execution.
+# `override_allowlist` decides who may override the gate; `allowed_tools` what the
+# reviewer may execute. The empty {} makes this entry name a real file, per
+# the fleet's exact-file convention (the security-files gate rejects any other form); with no keys it behaves exactly as no file.
 /.github/pr-review.json                                    @sumitcareteams
 
-# Enforced only while require_code_owner_reviews is on for main (see the note at the
-# top of this file, which predates it being switched on fleet-wide on 2026-08-20).
+# Like every entry here, enforced only while main's branch protection has BOTH
+# require_code_owner_reviews on and required_approving_review_count >= 1. The note at
+# the top records both off on 2026-08-17; a comment cannot show the current state, so
+# check it live (GitHub -> Settings -> Branches -> main).
