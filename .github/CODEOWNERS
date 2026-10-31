@@ -22,3 +22,24 @@
 # entries above (nothing matches those paths any more), the second guts the workflow.
 # A list of protected paths that is itself unprotected protects nothing.
 /.github/CODEOWNERS                           @sumitcareteams
+
+# The review gate (forge#355 follow-up): the reviewer is itself a security control, so a
+# PR that guts it sails past every later check. This repo cannot resolve forge's private
+# actions, so claude-code-review.yml runs the VENDORED copy below, checked out from the
+# base commit; editing it can switch the reviewer off as surely as editing the workflow.
+# Exact paths only; README.md is documentation and is left out. The two guard tests and
+# the workflow that runs them are the reviewer's own tests.
+/.github/workflows/claude-code-review.yml                  @sumitcareteams
+/.github/workflows/pr-mergeable.yml                        @sumitcareteams
+/.github/workflows/guard-tests.yml                         @sumitcareteams
+/test_workflow_injection.py                                @sumitcareteams
+/test_gate_stale_verdict.py                                @sumitcareteams
+/.github/actions/pr-review/pr_review_gate.py               @sumitcareteams
+/.github/actions/pr-review/prompt.md                       @sumitcareteams
+/.github/actions/pr-review/gate/action.yml                 @sumitcareteams
+/.github/actions/pr-review/has-verdict/action.yml          @sumitcareteams
+/.github/actions/pr-review/mergeable/action.yml            @sumitcareteams
+/.github/actions/pr-review/review/action.yml               @sumitcareteams
+/.github/actions/pr-review/start/action.yml                @sumitcareteams
+/.github/actions/pr-review/MANIFEST.sha256                 @sumitcareteams
+/.github/actions/pr-review/VENDORED_FROM                   @sumitcareteams
